@@ -194,8 +194,9 @@ def run(args: argparse.Namespace) -> int:
                 dropped += 1
                 log.debug("Not connected, dropped sample seq=%d", seq)
 
-            # Schedule against a monotonic clock so the rate does not drift.
-            next_tick += args.interval
+            # Schedule against a monotonic clock so the rate does not drift. If we fell
+            # behind (e.g. the process was suspended), skip the missed ticks, don't burst.
+            next_tick = max(next_tick + args.interval, time.monotonic())
             stop.wait(max(0.0, next_tick - time.monotonic()))
     finally:
         if connected.is_set():
