@@ -5,6 +5,7 @@
 ![OPC UA](https://img.shields.io/badge/OPC%20UA-IEC%2062541-0A6EBD)
 [![CI](https://github.com/PawanShetty-9/industrie40-telemetry-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanShetty-9/industrie40-telemetry-gateway/actions/workflows/ci.yml)
 ![Docker](https://img.shields.io/badge/deploy-Docker%20Compose%20%7C%20systemd-2496ED?logo=docker&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An Industrie 4.0 edge gateway in Python. It collects machine telemetry over **MQTT**
 and serves it through a typed, self-describing **OPC UA information model** to
@@ -548,4 +549,5 @@ navigieren.
 
 ---
 
-**Author:** [@PawanShetty-9](https://github.com/PawanShetty-9)
+**Author:** [@PawanShetty-9](https://github.com/PawanShetty-9)  
+**License:** [MIT](LICENSE)
