@@ -46,7 +46,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 log = logging.getLogger("opc_ua_server")
 
@@ -95,30 +95,29 @@ CNC_SIGNALS = (
 # --------------------------------------------------------------------------- #
 # Security: application instance certificate
 # --------------------------------------------------------------------------- #
-def ensure_server_certificate(pki_dir: Path) -> tuple[Path, Path]:
-    """Return (certificate, private key), creating a self-signed pair on first start.
+def ensure_certificate(cert_dir: Path, name: str, common_name: str, app_uri: str) -> tuple[Path, Path]:
+    """Return (certificate, private key) in ``cert_dir``, creating a self-signed pair if needed.
 
     The certificate follows OPC 10000-6 §6.2.2: the ApplicationUri is in the
     SubjectAltName, next to the DNS names / IP clients use to reach the server.
     """
-    own_dir = pki_dir / "own"
-    cert_path = own_dir / "server_cert.der"
-    key_path = own_dir / "server_key.pem"
+    cert_path = cert_dir / f"{name}_cert.der"
+    key_path = cert_dir / f"{name}_key.pem"
 
     if cert_path.is_file() and key_path.is_file():
         cert = x509.load_der_x509_certificate(cert_path.read_bytes())
         if cert.not_valid_after_utc > datetime.now(timezone.utc):
             return cert_path, key_path
-        log.warning("Server certificate expired on %s, generating a new one", cert.not_valid_after_utc)
+        log.warning("Certificate %s expired on %s, generating a new one", cert_path, cert.not_valid_after_utc)
 
-    own_dir.mkdir(parents=True, exist_ok=True)
+    cert_dir.mkdir(parents=True, exist_ok=True)
     key = cert_gen.generate_private_key()
     cert = cert_gen.generate_self_signed_app_certificate(
         key,
-        SERVER_NAME,
+        common_name,
         {"organizationName": "industrie40-telemetry-gateway", "countryName": "DE"},
         [
-            x509.UniformResourceIdentifier(APPLICATION_URI),
+            x509.UniformResourceIdentifier(app_uri),
             x509.DNSName(socket.gethostname()),
             x509.DNSName("localhost"),
             x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
@@ -131,8 +130,12 @@ def ensure_server_certificate(pki_dir: Path) -> tuple[Path, Path]:
     with os.fdopen(fd, "wb") as f:
         f.write(cert_gen.dump_private_key_as_pem(key))
     cert_path.write_bytes(cert.public_bytes(Encoding.DER))
-    log.info("Generated self-signed server certificate: %s", cert_path)
+    log.info("Generated self-signed certificate: %s", cert_path)
     return cert_path, key_path
+
+
+def ensure_server_certificate(pki_dir: Path) -> tuple[Path, Path]:
+    return ensure_certificate(pki_dir / "own", "server", SERVER_NAME, APPLICATION_URI)
 
 
 # --------------------------------------------------------------------------- #
