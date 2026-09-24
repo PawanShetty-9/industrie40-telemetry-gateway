@@ -1,0 +1,57 @@
+# Complete edge stack: MQTT broker + edge gateway (OPC UA server) + CNC simulator.
+#
+#   docker compose up -d --build        # start
+#   docker compose ps                   # edge-gateway should become "healthy"
+#   docker compose logs -f edge-gateway
+#   docker compose down                 # stop (add -v to also delete the certificate volume)
+#
+# OPC UA: opc.tcp://localhost:4840 (published on 127.0.0.1 only)
+
+name: industrie40-edge
+
+x-app: &app
+  build:
+    context: .
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+  image: industrie40-edge-gateway:latest
+  restart: unless-stopped
+  depends_on:
+    - mosquitto
+  # Hardening: read-only root filesystem, no Linux capabilities, no privilege escalation.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  mosquitto:
+    image: ${MOSQUITTO_IMAGE:-eclipse-mosquitto:2}
+    restart: unless-stopped
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    # Port 1883 is intentionally not published: only the containers below reach the broker.
+
+  edge-gateway:
+    <<: *app
+    command: ["python", "edge_gateway.py", "--mqtt-host", "mosquitto", "--opcua-endpoint", "opc.tcp://0.0.0.0:4840"]
+    ports:
+      - "127.0.0.1:4840:4840"
+    volumes:
+      - pki:/app/pki  # keeps the server certificate across container re-creation
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 4840), 2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  sensor-simulator:
+    <<: *app
+    command: ["python", "sensor_simulator.py", "--host", "mosquitto"]
+
+volumes:
+  pki:

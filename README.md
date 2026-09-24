@@ -3,7 +3,8 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![MQTT](https://img.shields.io/badge/MQTT-3.1.1-660066)
 ![OPC UA](https://img.shields.io/badge/OPC%20UA-IEC%2062541-0A6EBD)
-![Tests](https://img.shields.io/badge/tests-unittest-success)
+[![CI](https://github.com/PawanShetty-9/industrie40-telemetry-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanShetty-9/industrie40-telemetry-gateway/actions/workflows/ci.yml)
+![Docker](https://img.shields.io/badge/deploy-Docker%20Compose%20%7C%20systemd-2496ED?logo=docker&logoColor=white)
 
 An Industrie 4.0 edge gateway in Python. It collects machine telemetry over **MQTT**
 and serves it through a typed, self-describing **OPC UA information model** to
@@ -13,6 +14,9 @@ The data comes from a simulated CNC spindle: temperature, speed and vibration
 velocity. The gateway treats every MQTT message as untrusted, reports data quality
 with standard OPC UA status codes and handles broker outages, crashed publishers and
 malformed input without stopping.
+
+It ships with a verification client, 20 automated tests and a CI pipeline, and deploys
+either as a Docker Compose stack or as hardened systemd services on an edge device.
 
 > 🇩🇪 **Deutsche Kurzfassung:** [siehe unten](#-deutsche-kurzfassung)
 
@@ -44,6 +48,7 @@ flowchart LR
 | `sensor_simulator.py` | Simulates a CNC spindle and publishes one JSON sample per second. RPM ramps between machining set-points, temperature follows with a first-order thermal lag, and vibration rises with speed. Announces `ONLINE`/`OFFLINE` with a retained MQTT Last Will. |
 | `opc_ua_server.py` | Builds the OPC UA information model and server configuration: security policies, certificate, endpoints. Runs standalone for inspecting the model, or is imported by the gateway. |
 | `edge_gateway.py` | Subscribes to MQTT, validates each payload and writes the values into the OPC UA nodes with source timestamp and status code. Hosts the OPC UA server in the same process. |
+| `opc_client.py` | Verification client that behaves like a generic SCADA client. It knows only the namespace URI and the machine's browse path, and discovers signals, units and ranges at runtime. Live view, or `--check` smoke test with exit codes for CI and deployment. |
 
 ### Inside the gateway
 
@@ -207,27 +212,43 @@ same behaviour.
 - **Bound to `localhost` by default.** Nothing is exposed to the network unless you
   choose to.
 - **MQTT input validation:** every payload is treated as untrusted (see the rules above).
+- **Hardened deployment:**
+  - *Docker:* non-root user, read-only filesystem, all Linux capabilities dropped.
+  - *systemd:* dedicated user, `ProtectSystem=strict`, a system-call filter and
+    encrypted endpoints only. `systemd-analyze security` rates both services
+    **1.3 "OK"**, compared with 9.6 "UNSAFE" for Debian's stock Mosquitto unit.
 
 **Production hardening (outside the scope of this simulation):**
 - MQTT over TLS (port 8883) with authentication and topic ACLs (`password_file`,
-  `acl_file` in Mosquitto).
+  `acl_file` in Mosquitto). The scripts don't have TLS or credential options yet.
 - An OPC UA client-certificate trust list. asyncua accepts any client application
   certificate by default; production needs a `CertificateValidator` with a `TrustStore`.
 - CA-signed certificates (e.g. a Global Discovery Server) instead of self-signed ones.
-- Run as an unprivileged systemd service, with network segmentation into zones and
-  conduits per **IEC 62443**.
+- Network segmentation into zones and conduits per **IEC 62443**, and NTP on every
+  device, because timestamps and the clock-skew check depend on it.
+
+The full list is in the [production checklist](docs/DEPLOYMENT.md#4-production-checklist).
 
 ## Project structure
 
 ```
 .
-├── sensor_simulator.py      # MQTT publisher: simulated CNC spindle
-├── opc_ua_server.py         # OPC UA information model + server (standalone or imported)
-├── edge_gateway.py          # MQTT subscriber + OPC UA server in one process
+├── sensor_simulator.py         # MQTT publisher: simulated CNC spindle
+├── opc_ua_server.py            # OPC UA information model + server (standalone or imported)
+├── edge_gateway.py             # MQTT subscriber + OPC UA server in one process
+├── opc_client.py               # verification client: live view and --check smoke test
 ├── tests/
-│   └── test_edge_gateway.py # payload validation + in-process OPC UA tests
-├── requirements.txt         # pinned: paho-mqtt, asyncua, cryptography
-└── pki/                     # created on first start: server certificate + key (git-ignored)
+│   ├── test_edge_gateway.py    # payload validation + gateway against an in-process OPC UA server
+│   └── test_opc_client.py      # client discovery, check mode, encryption, error exit codes
+├── Dockerfile                  # one image for gateway, simulator and client (non-root)
+├── docker-compose.yml          # broker + gateway + simulator stack
+├── deploy/
+│   ├── mosquitto/mosquitto.conf
+│   └── systemd/                # hardened edge-gateway.service and sensor-simulator.service
+├── docs/DEPLOYMENT.md          # test run, acceptance checklist, deployment, production checklist
+├── .github/workflows/ci.yml    # unit tests (3.10–3.13), end-to-end and Docker Compose jobs
+├── requirements.txt            # pinned: paho-mqtt, asyncua, cryptography
+└── pki/                        # created on first start: certificates + keys (git-ignored)
 ```
 
 ## Getting started
@@ -257,7 +278,10 @@ python edge_gateway.py
 # Terminal 2: simulated CNC machine
 python sensor_simulator.py
 
-# Terminal 3 (optional): watch the raw MQTT traffic
+# Terminal 3: watch the values arrive in OPC UA
+python opc_client.py
+
+# Optional: watch the raw MQTT traffic
 mosquitto_sub -h localhost -t 'factory/#' -v
 ```
 
@@ -266,6 +290,36 @@ mosquitto_sub -h localhost -t 'factory/#' -v
 > only to inspect the empty information model.
 
 ## Verifying the data
+
+### Verification client (`opc_client.py`)
+
+```
+$ python opc_client.py
+Connected: opc.tcp://localhost:4840  (security: None)
+Server:    Factory Edge Gateway (Simulation) 0.5.0, state Running
+Machine:   Objects/Factory/ProductionLine1/CNC_Machine_1  [CNCMachineType]
+  Signal       Type    Unit   EURange        NodeId
+  Temperature  Double  °C     0 … 120        ns=2;s=Factory.ProductionLine1.CNC_Machine_1.Temperature
+  RPM          Double  r/min  0 … 24000      ns=2;s=Factory.ProductionLine1.CNC_Machine_1.RPM
+  Vibration    Double  mm/s   0 … 50         ns=2;s=Factory.ProductionLine1.CNC_Machine_1.Vibration
+
+Live values (Ctrl+C to stop):
+15:39:29  Temperature       22.64 °C     Good                                source 15:39:29.193  transport delay 1.4 ms
+15:39:29  RPM                6000 r/min  Good                                source 15:39:29.193  transport delay 1.6 ms
+15:39:29  Vibration          0.84 mm/s   Good                                source 15:39:29.193  transport delay 1.7 ms
+```
+
+- The client finds the machine through the namespace **URI** and the browse path. It
+  reads the units and ranges from the server instead of hard-coding them, the way a
+  generic SCADA client would.
+- *Transport delay* is the gateway's `ServerTimestamp` minus the sensor's
+  `SourceTimestamp`: the time from measurement to availability in OPC UA.
+
+| Command | Purpose |
+|---|---|
+| `python opc_client.py --check` | Smoke test: exit `0` once all values are `Good`, `1` if not within `--timeout` (with a hint why), `2` if the server is unreachable |
+| `python opc_client.py --security Aes256Sha256RsaPss` | Sign & Encrypt; a client certificate is generated in `pki/client/` |
+| `python opc_client.py --duration 10` | Live view for 10 s |
 
 ### UaExpert (graphical)
 
@@ -308,6 +362,10 @@ All scripts show their options with `--help`.
 | | `--stale-timeout` | `5` | Seconds without data before values become Uncertain |
 | | `--pki-dir` | `./pki` | Certificate and key location |
 | `opc_ua_server.py` | `--endpoint`, `--secure-only`, `--pki-dir` | as above | Standalone server |
+| `opc_client.py` | `--url` | `opc.tcp://localhost:4840` | Server endpoint |
+| | `--security` | `none` | `Basic256Sha256`, `Aes128Sha256RsaOaep` or `Aes256Sha256RsaPss` (Sign & Encrypt) |
+| | `--check`, `--timeout` | off, `15` | Smoke-test mode and its time limit |
+| | `--machine-path` | `Factory/ProductionLine1/CNC_Machine_1` | Browse path below `Objects` |
 
 All scripts also accept `--log-level` (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
 
@@ -317,7 +375,7 @@ All scripts also accept `--log-level` (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
 python -m unittest -v
 ```
 
-There are 14 test cases, using only the standard library (no extra dependencies):
+There are 20 test cases, using only the standard library (no extra dependencies):
 - **Payload validation:** 19 kinds of malformed input, among them invalid UTF-8,
   4000-level nesting, `NaN`, `1e400`, booleans passed as numbers, a wrong
   `machine_id`, timestamps without an offset and timestamps dated in the future.
@@ -328,6 +386,46 @@ There are 14 test cases, using only the standard library (no extra dependencies)
   - rejection of late and duplicate samples;
   - sequence-gap counting;
   - publisher `OFFLINE`, broker loss and watchdog timeout.
+- **Verification client:**
+  - model discovery with units and ranges;
+  - `--check` failing while waiting for data, and passing once values are `Good`;
+  - an encrypted connection;
+  - an unknown machine path;
+  - an unreachable server.
+
+**CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs three jobs on every
+push:
+1. The unit tests on Python 3.10, 3.11, 3.12 and 3.13.
+2. An **end-to-end** test with a real Mosquitto broker, the simulator, the gateway, and
+   `opc_client.py --check`, both unencrypted and with Sign & Encrypt.
+3. A **Docker Compose** deployment that builds the stack and runs the smoke test inside
+   the gateway container.
+
+## Deployment
+
+Both options are described step by step in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+The guide also has a 13-point acceptance checklist and a production checklist.
+
+**Docker Compose:** broker, gateway and simulator in one command. OPC UA is published on
+`127.0.0.1:4840` only.
+
+```bash
+docker compose up -d --build
+docker compose ps                                    # edge-gateway: (healthy)
+docker compose exec edge-gateway python opc_client.py --check
+```
+
+**systemd on an edge device (Debian, Ubuntu, Kali, Raspberry Pi OS):**
+- the services start at boot and restart 5 s after a crash;
+- code lives in `/opt`, read-only for the service;
+- the certificate lives in `/var/lib`;
+- only encrypted endpoints are offered.
+
+```bash
+sudo cp deploy/systemd/*.service /etc/systemd/system/     # after installing to /opt, see guide
+sudo systemctl enable --now mosquitto edge-gateway sensor-simulator
+journalctl -u edge-gateway -f
+```
 
 ## Troubleshooting
 
@@ -337,6 +435,8 @@ There are 14 test cases, using only the standard library (no extra dependencies)
 | Values flip between `Good` and `Uncertain` every second | Two publishers with the same `--machine-id` are running. The broker keeps disconnecting one in favour of the other (MQTT client-ID takeover), and each disconnect publishes the Last Will. Stop the duplicate. |
 | Values stay `Bad_WaitingForInitialData` | The simulator isn't running, or gateway and simulator use different `--machine-id` values |
 | `MQTT broker localhost:1883 unreachable` | Check `systemctl status mosquitto` |
+| `opc_client.py`: `No matching endpoints … SecurityPolicy#None` | The gateway runs with `--secure-only` (the default for systemd). Add `--security Basic256Sha256`. |
+| Docker: `429 Too Many Requests` when pulling images | Docker Hub rate limit. Use the mirror variables described in [DEPLOYMENT.md](docs/DEPLOYMENT.md#operate). |
 | UaExpert warns about the certificate hostname | The certificate lists the hostname, `localhost` and `127.0.0.1`. Connect by one of those, or accept the warning when using a LAN IP. If you moved `pki/` from another machine, delete it and a new certificate is generated on the next start. |
 
 ## Possible extensions
@@ -346,7 +446,6 @@ There are 14 test cases, using only the standard library (no extra dependencies)
 - MQTT over TLS with authentication, and an OPC UA certificate trust list
 - Sparkplug B payloads and birth/death certificates
 - Historical access (OPC UA HistoryRead) or a time-series database
-- Docker Compose and systemd deployment
 - Alignment with the OPC 40001 Machinery / umati companion specifications
 
 ## Standards and references
@@ -428,8 +527,24 @@ pip install -r requirements.txt
 python edge_gateway.py        # Terminal 1: Gateway + OPC-UA-Server
 python sensor_simulator.py    # Terminal 2: simulierte CNC-Maschine
 ```
-Anschließend mit UaExpert auf `opc.tcp://localhost:4840` verbinden und zu
-`Objects/Factory/ProductionLine1/CNC_Machine_1` navigieren.
+Zur Kontrolle `python opc_client.py` starten (Live-Ansicht), oder mit UaExpert auf
+`opc.tcp://localhost:4840` verbinden und zu `Objects/Factory/ProductionLine1/CNC_Machine_1`
+navigieren.
+
+### Verifikation, Tests und Deployment
+- **`opc_client.py`** verhält sich wie ein generischer SCADA-Client. Es findet Signale,
+  Einheiten und Messbereiche selbstständig über das Informationsmodell.
+  `--check` dient als Smoke-Test mit Exit-Code (0 = alle Werte `Good`).
+- **20 automatisierte Tests** und eine **CI-Pipeline** (GitHub Actions): Unit-Tests
+  auf Python 3.10 bis 3.13, ein End-to-End-Test mit echtem Mosquitto-Broker und ein
+  Docker-Compose-Deployment.
+- **Deployment als Docker-Compose-Stack** (`docker compose up -d --build`): ohne
+  Root-Rechte, mit schreibgeschütztem Dateisystem und ohne Linux-Capabilities.
+- **Deployment als systemd-Dienst** auf einem Edge-Gerät: Start beim Booten und
+  automatischer Neustart nach einem Absturz. Es werden nur verschlüsselte Endpunkte
+  angeboten. `systemd-analyze security` bewertet den Dienst mit **1.3 „OK“**.
+- Die Schritt-für-Schritt-Anleitung mit Abnahme-Checkliste steht in
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 
