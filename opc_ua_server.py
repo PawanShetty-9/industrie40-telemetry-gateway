@@ -46,7 +46,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 log = logging.getLogger("opc_ua_server")
 
@@ -268,6 +268,15 @@ async def build_information_model(server: Server) -> dict[str, Node]:
     return await add_cnc_machine(line, machine_type, idx, "CNC_Machine_1")
 
 
+async def log_server_info(server: Server, endpoint: str, nodes: dict[str, Node]) -> None:
+    """Log the endpoint URL, the offered security policies and the signal NodeIds."""
+    log.info("OPC UA server listening on %s", endpoint)
+    for ep in await server.get_endpoints():
+        log.info("  endpoint: %s / %s", ep.SecurityPolicyUri.rsplit("#", 1)[-1], ep.SecurityMode.name)
+    for name, node in nodes.items():
+        log.info("  node:     %-12s %s", name, node.nodeid.to_string())
+
+
 # --------------------------------------------------------------------------- #
 # Standalone entry point
 # --------------------------------------------------------------------------- #
@@ -290,12 +299,7 @@ async def run(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        log.info("OPC UA server listening on %s", args.endpoint)
-        for endpoint in await server.get_endpoints():
-            log.info("  endpoint: %s", endpoint.SecurityPolicyUri.rsplit("#", 1)[-1]
-                     + f" / {endpoint.SecurityMode.name}")
-        for name, node in nodes.items():
-            log.info("  node:     %-12s %s", name, node.nodeid.to_string())
+        await log_server_info(server, args.endpoint, nodes)
         log.info("Press Ctrl+C to stop")
         await stop.wait()
     finally:
