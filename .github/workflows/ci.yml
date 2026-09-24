@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
+
+  end-to-end:
+    name: End-to-end (Mosquitto + simulator + gateway + OPC UA client)
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Mosquitto
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mosquitto
+          sudo systemctl start mosquitto
+      - run: pip install -r requirements.txt
+      - name: Start gateway and simulator
+        run: |
+          python edge_gateway.py > gateway.log 2>&1 &
+          python sensor_simulator.py > simulator.log 2>&1 &
+      - name: Smoke test (unencrypted)
+        run: python opc_client.py --check --timeout 30
+      - name: Smoke test (Sign & Encrypt)
+        run: python opc_client.py --check --timeout 30 --security Aes256Sha256RsaPss
+      - name: Logs
+        if: always()
+        run: |
+          echo "::group::gateway.log"; cat gateway.log || true; echo "::endgroup::"
+          echo "::group::simulator.log"; cat simulator.log || true; echo "::endgroup::"
+
+  docker-compose:
+    name: Docker Compose deployment
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the stack
+        run: docker compose up -d --build
+      - name: Smoke test inside the gateway container
+        run: docker compose exec -T edge-gateway python opc_client.py --check --timeout 60
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
