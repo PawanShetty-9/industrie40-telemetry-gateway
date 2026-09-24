@@ -1,0 +1,11 @@
+# Factory Edge Gateway Simulation - runtime dependencies
+# Pinned for reproducible builds. Python >= 3.10 required.
+
+# MQTT client (sensor simulator + gateway subscriber). v2.x uses CallbackAPIVersion.
+paho-mqtt==2.1.0
+
+# OPC UA server/client (IEC 62541) built on asyncio
+asyncua==2.0.1
+
+# X.509 certificates / crypto for OPC UA security policies (Basic256Sha256, etc.)
+cryptography==50.0.1
